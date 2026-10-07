@@ -1,15 +1,17 @@
 /**
  * Stack Ranking – bonuses
  *
+ *  - JM7: =VALIDAR_BONOS(JE7:JG; JJ7:JJ)
+ *    Live check: "OK" when the money in JE:JG matches what is approved in
+ *    Comments (JJ), "Mismatch: Total = ..." when it must be reviewed.
+ *    It recalculates by itself whenever JE:JG or JJ change.
+ *
  *  - Checkbox in IZ:
  *      TRUE  -> JE:JG of that row are frozen as values.
  *      FALSE -> JE:JG get the base formula back (template JE3:JG3).
  *    Every row in the edit is processed (paste, fill down, several checkboxes
  *    toggled at once, multi-range selections). The action is idempotent: each
  *    row is set to whatever its checkbox says, so repeating it is harmless.
- *
- *  - validarBonosAvanzado(): writes OK / Mismatch in JM for every data row.
- *    It also runs by itself for the rows touched by an edit in IZ, JE:JG or JJ.
  */
 
 const SHEET_NAME = "Stack Ranking";
@@ -17,13 +19,10 @@ const FIRST_ROW = 7;           // first data row (rows 5-6 are headers)
 const TEMPLATE_ROW = 3;        // JE3:JG3 hold the base formulas
 const COL_CHECK = 260;         // IZ
 const COL_JE = 265;            // JE (Tech + Booster), JF, JG
-const COL_COMMENT = 270;       // JJ (Comments)
-const COL_RESULT = 273;        // JM
 
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu("Bonos")
-    .addItem("Validar bonos (JM)", "validarBonosAvanzado")
     .addItem("Sincronizar checkboxes IZ", "sincronizarCheckboxes")
     .addToUi();
 }
@@ -47,17 +46,13 @@ function onEditBonos(e) {
     if (list) list.getRanges().forEach(r => ranges.push(r));
   } catch (err) {}
 
-  const checkRows = rowsTouching(ranges, COL_CHECK, COL_CHECK);
-  const validateRows = rowsTouching(ranges, COL_JE, COL_JE + 2)
-    .concat(rowsTouching(ranges, COL_COMMENT, COL_COMMENT))
-    .concat(checkRows);
-  if (!validateRows.length) return;
+  const rows = uniqueSorted(rowsTouching(ranges, COL_CHECK, COL_CHECK));
+  if (!rows.length) return;
 
   const lock = LockService.getDocumentLock();
   lock.waitLock(25000);
   try {
-    if (checkRows.length) aplicarCheckboxes(sheet, uniqueSorted(checkRows));
-    validarFilas(sheet, uniqueSorted(validateRows));
+    aplicarCheckboxes(sheet, rows);
   } finally {
     lock.releaseLock();
   }
@@ -65,20 +60,30 @@ function onEditBonos(e) {
 
 /** Safety net: applies IZ to every data row. */
 function sincronizarCheckboxes() {
-  const sheet = getSheet();
-  const rows = allDataRows(sheet);
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  if (!sheet) throw new Error('Sheet "' + SHEET_NAME + '" not found.');
+  const rows = [];
+  for (let r = FIRST_ROW; r <= sheet.getLastRow(); r++) rows.push(r);
   if (!rows.length) return;
   aplicarCheckboxes(sheet, rows);
-  validarFilas(sheet, rows);
   SpreadsheetApp.getActiveSpreadsheet().toast("IZ synced for " + rows.length + " rows.", "Bonus Audit");
 }
 
-function validarBonosAvanzado() {
-  const sheet = getSheet();
-  const rows = allDataRows(sheet);
-  if (!rows.length) return;
-  validarFilas(sheet, rows);
-  SpreadsheetApp.getActiveSpreadsheet().toast("Review complete. Please check column JM.", "Bonus Audit");
+/**
+ * Validates every row: "OK" or "Mismatch: Total = ...".
+ * Use once in JM7: =VALIDAR_BONOS(JE7:JG; JJ7:JJ)
+ *
+ * @param {Array} montos JE:JG (Tech + Booster, Total Performance, Total Compliance)
+ * @param {Array} comentarios JJ (Comments)
+ * @customfunction
+ */
+function VALIDAR_BONOS(montos, comentarios) {
+  if (!Array.isArray(montos)) montos = [[montos, 0, 0]];
+  if (!Array.isArray(comentarios)) comentarios = [[comentarios]];
+  return montos.map(function(m, i) {
+    var c = comentarios[i] ? comentarios[i][0] : "";
+    return [evaluarBono(m[0], m[1], m[2], c)];
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -113,20 +118,6 @@ function aplicarCheckboxes(sheet, rows) {
     });
   }
   SpreadsheetApp.flush();
-}
-
-function validarFilas(sheet, rows) {
-  const first = rows[0];
-  const n = rows[rows.length - 1] - first + 1;
-  const values = sheet.getRange(first, COL_JE, n, COL_COMMENT - COL_JE + 1).getValues();
-  runs(rows).forEach(([start, len]) => {
-    const out = [];
-    for (let r = start; r < start + len; r++) {
-      const v = values[r - first];
-      out.push([evaluarBono(v[0], v[1], v[2], v[COL_COMMENT - COL_JE])]);
-    }
-    sheet.getRange(start, COL_RESULT, len, 1).setValues(out);
-  });
 }
 
 /** Same rules as the original validarBonosAvanzado, for one row. */
@@ -186,18 +177,6 @@ function evaluarBono(jeVal, jfVal, jgVal, commentVal) {
 }
 
 // ---------------------------------------------------------------------------
-
-function getSheet() {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
-  if (!sheet) throw new Error('Sheet "' + SHEET_NAME + '" not found.');
-  return sheet;
-}
-
-function allDataRows(sheet) {
-  const rows = [];
-  for (let r = FIRST_ROW; r <= sheet.getLastRow(); r++) rows.push(r);
-  return rows;
-}
 
 /** Data rows of the given ranges that intersect columns [c1, c2]. */
 function rowsTouching(ranges, c1, c2) {
