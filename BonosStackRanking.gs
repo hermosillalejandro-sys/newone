@@ -1,7 +1,8 @@
 /**
  * Stack Ranking – bonuses
  *
- *  - JM7: =VALIDAR_BONOS(JE7:JG; JJ7:JJ)
+ *  - JM7: =VALIDAR_BONOS(JE7:JG, JJ7:JJ)
+ *    validarBonosAvanzado() writes that formula in JM7 for you.
  *    Live check: "OK" when the money in JE:JG matches what is approved in
  *    Comments (JJ), "Mismatch: Total = ..." when it must be reviewed.
  *    It recalculates by itself whenever JE:JG or JJ change.
@@ -19,10 +20,13 @@ const FIRST_ROW = 7;           // first data row (rows 5-6 are headers)
 const TEMPLATE_ROW = 3;        // JE3:JG3 hold the base formulas
 const COL_CHECK = 260;         // IZ
 const COL_JE = 265;            // JE (Tech + Booster), JF, JG
+const COL_RESULT = 273;        // JM
+const JM_FORMULA = "=VALIDAR_BONOS(JE7:JG, JJ7:JJ)";
 
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu("Bonos")
+    .addItem("Validar bonos (JM)", "validarBonosAvanzado")
     .addItem("Sincronizar checkboxes IZ", "sincronizarCheckboxes")
     .addToUi();
 }
@@ -58,6 +62,20 @@ function onEditBonos(e) {
   }
 }
 
+/**
+ * Puts the live formula in JM7 (clears JM7 down first so the results have
+ * room). Running it again is harmless.
+ */
+function validarBonosAvanzado() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  if (!sheet) throw new Error('Sheet "' + SHEET_NAME + '" not found.');
+  const n = sheet.getMaxRows() - FIRST_ROW + 1;
+  if (n <= 0) return;
+  sheet.getRange(FIRST_ROW, COL_RESULT, n, 1).clearContent();
+  sheet.getRange(FIRST_ROW, COL_RESULT).setFormula(JM_FORMULA);
+  SpreadsheetApp.getActiveSpreadsheet().toast('Review complete. Please check column JM.', 'Bonus Audit');
+}
+
 /** Safety net: applies IZ to every data row. */
 function sincronizarCheckboxes() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
@@ -71,7 +89,7 @@ function sincronizarCheckboxes() {
 
 /**
  * Validates every row: "OK" or "Mismatch: Total = ...".
- * Use once in JM7: =VALIDAR_BONOS(JE7:JG; JJ7:JJ)
+ * Use once in JM7: =VALIDAR_BONOS(JE7:JG, JJ7:JJ)
  *
  * @param {Array} montos JE:JG (Tech + Booster, Total Performance, Total Compliance)
  * @param {Array} comentarios JJ (Comments)
@@ -120,7 +138,7 @@ function aplicarCheckboxes(sheet, rows) {
   SpreadsheetApp.flush();
 }
 
-/** Same rules as the original validarBonosAvanzado, for one row. */
+/** Same rules as the original validarBonosAvanzado script, for one row. */
 function evaluarBono(jeVal, jfVal, jgVal, commentVal) {
   var je = parseFloat(jeVal) || 0;
   var jf = parseFloat(jfVal) || 0;
