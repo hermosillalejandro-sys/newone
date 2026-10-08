@@ -10,9 +10,9 @@
  *  - Checkbox in IZ:
  *      TRUE  -> JE:JG of that row are frozen as values.
  *      FALSE -> JE:JG get the base formula back (template JE3:JG3).
- *    Every row in the edit is processed (paste, fill down, several checkboxes
- *    toggled at once, multi-range selections). The action is idempotent: each
- *    row is set to whatever its checkbox says, so repeating it is harmless.
+ *    Every IZ edit checks ALL rows, so pastes, fill down, several checkboxes
+ *    at once, filtered ranges or a click missed earlier are all covered.
+ *    Rows already in the right state are left alone.
  */
 
 const SHEET_NAME = "Stack Ranking";
@@ -42,21 +42,18 @@ function onEditBonos(e) {
   const sheet = e.range.getSheet();
   if (sheet.getName() !== SHEET_NAME) return;
 
-  // e.range only covers the active range; include the whole selection so no
-  // row of a multi-range edit is skipped.
+  // Only react when the edit touches IZ (e.range or any part of the selection).
   const ranges = [e.range];
   try {
     const list = sheet.getActiveRangeList();
     if (list) list.getRanges().forEach(r => ranges.push(r));
   } catch (err) {}
-
-  const rows = uniqueSorted(rowsTouching(ranges, COL_CHECK, COL_CHECK));
-  if (!rows.length) return;
+  if (!rowsTouching(ranges, COL_CHECK, COL_CHECK).length) return;
 
   const lock = LockService.getDocumentLock();
-  lock.waitLock(25000);
+  if (!lock.tryLock(20000)) return;   // the next IZ edit catches up on this one
   try {
-    aplicarCheckboxes(sheet, rows);
+    aplicarCheckboxes(sheet);
   } finally {
     lock.releaseLock();
   }
@@ -76,15 +73,13 @@ function validarBonosAvanzado() {
   SpreadsheetApp.getActiveSpreadsheet().toast('Review complete. Please check column JM.', 'Bonus Audit');
 }
 
-/** Safety net: applies IZ to every data row. */
+/** Same check as every IZ edit, from the menu. */
 function sincronizarCheckboxes() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
   if (!sheet) throw new Error('Sheet "' + SHEET_NAME + '" not found.');
-  const rows = [];
-  for (let r = FIRST_ROW; r <= sheet.getLastRow(); r++) rows.push(r);
-  if (!rows.length) return;
-  aplicarCheckboxes(sheet, rows);
-  SpreadsheetApp.getActiveSpreadsheet().toast("IZ synced for " + rows.length + " rows.", "Bonus Audit");
+  const done = aplicarCheckboxes(sheet);
+  SpreadsheetApp.getActiveSpreadsheet().toast(
+    done.frozen + " rows frozen, " + done.restored + " formulas restored.", "Bonus Audit");
 }
 
 /**
@@ -106,24 +101,35 @@ function VALIDAR_BONOS(montos, comentarios) {
 
 // ---------------------------------------------------------------------------
 
-function aplicarCheckboxes(sheet, rows) {
-  const first = rows[0];
-  const n = rows[rows.length - 1] - first + 1;
-  const checks = sheet.getRange(first, COL_CHECK, n, 1).getValues();
+/**
+ * Brings every data row in line with its IZ checkbox:
+ *   IZ TRUE  and JE:JG still has formulas -> freeze as values.
+ *   IZ FALSE and JE:JG has no formulas    -> restore JE3:JG3 formulas.
+ * Rows already in the right state are not touched, so a row missed by an
+ * earlier edit is fixed on the next one.
+ */
+function aplicarCheckboxes(sheet) {
+  const n = sheet.getLastRow() - FIRST_ROW + 1;
+  if (n <= 0) return { frozen: 0, restored: 0 };
+  const checks = sheet.getRange(FIRST_ROW, COL_CHECK, n, 1).getValues();
+  const block = sheet.getRange(FIRST_ROW, COL_JE, n, 3);
+  const formulas = block.getFormulas();
 
   const freeze = [], restore = [];
-  rows.forEach(r => {
-    const v = checks[r - first][0];
-    (v === true || String(v).toUpperCase() === "TRUE" ? freeze : restore).push(r);
-  });
+  for (let i = 0; i < n; i++) {
+    const v = checks[i][0];
+    const checked = v === true || String(v).toUpperCase() === "TRUE";
+    const hasFormula = formulas[i].some(f => f !== "");
+    if (checked && hasFormula) freeze.push(FIRST_ROW + i);
+    else if (!checked && !hasFormula) restore.push(FIRST_ROW + i);
+  }
 
   // Freeze: current values (from the formulas) written back as plain values.
   if (freeze.length) {
-    SpreadsheetApp.flush();
-    const vals = sheet.getRange(first, COL_JE, n, 3).getValues();
+    const vals = block.getValues();
     runs(freeze).forEach(([start, len]) => {
-      sheet.getRange(start, COL_JE, len, 3)
-        .setValues(vals.slice(start - first, start - first + len));
+      const k = start - FIRST_ROW;
+      sheet.getRange(start, COL_JE, len, 3).setValues(vals.slice(k, k + len));
     });
   }
 
@@ -135,7 +141,7 @@ function aplicarCheckboxes(sheet, rows) {
         SpreadsheetApp.CopyPasteType.PASTE_FORMULA, false);
     });
   }
-  SpreadsheetApp.flush();
+  return { frozen: freeze.length, restored: restore.length };
 }
 
 /** Same rules as the original validarBonosAvanzado script, for one row. */
@@ -144,7 +150,8 @@ function evaluarBono(jeVal, jfVal, jgVal, commentVal) {
   var jf = parseFloat(jfVal) || 0;
   var jg = parseFloat(jgVal) || 0;
   var total = je + jf + jg;
-  var comment = commentVal ? String(commentVal) : "";
+  // A typed "0.00" arrives as the number 0: it is still a comment.
+  var comment = (commentVal === "" || commentVal == null) ? "" : String(commentVal);
 
   if (comment === "" || isNaN(total)) return "";
 
@@ -205,10 +212,6 @@ function rowsTouching(ranges, c1, c2) {
     for (let r = Math.max(rg.getRow(), FIRST_ROW); r <= last; r++) rows.push(r);
   });
   return rows;
-}
-
-function uniqueSorted(rows) {
-  return Array.from(new Set(rows)).sort((a, b) => a - b);
 }
 
 /** Sorted rows -> [[start, length], ...] contiguous runs. */
