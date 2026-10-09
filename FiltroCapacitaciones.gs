@@ -1,15 +1,18 @@
 /**
  * Completion Tracker – training filter
  *
- * In A3 (with the source link in A1):
- *   =FILTRAR_CAPACITACION(IMPORTRANGE(A1, "Compliance!A8:T"), I2, I3:I20)
+ * Layout: column A holds the inputs, column B is a spacer, results in C:I.
+ *   A1      link to the source spreadsheet
+ *   A2      Issue Types
+ *   A3:A20  training names
+ *   C3      =FILTRAR_CAPACITACION(IMPORTRANGE(A1, "Compliance!A8:T"), A2, A3:A20)
  *
- * I2 holds one or more Issue Types separated by commas, in priority order:
+ * A2 holds one or more Issue Types separated by commas, in priority order:
  *   Onsite Activities – Training Iniciatives, Training / Huddles
  *   - 1st Issue Type (priority): every row is kept. The comment is only
- *     compared to I3:I20 to tell which training it was.
+ *     compared to A3:A20 to tell which training it was.
  *   - 2nd, 3rd... Issue Types: a row is kept only when its comment matches a
- *     training in I3:I20 with a stricter check: words that are already in the
+ *     training in A3:A20 with a stricter check: words that are already in the
  *     Issue Type name ("training", "huddles") do not count, and at least
  *     SECONDARY_MIN_WORDS distinctive words must be found.
  *   An Issue Type can be written in part ("Training / Huddles" matches
@@ -47,8 +50,8 @@ const STOPWORDS = ["the", "a", "an", "of", "for", "to", "and", "in", "on", "at",
  * Filters the Compliance source by Issue Type and training name.
  *
  * @param {Array} datos IMPORTRANGE(A1, "Compliance!A8:T")
- * @param {string} issueTypes Issue Types separated by commas, priority first (I2)
- * @param {Array} capacitaciones Training names (I3:I20)
+ * @param {string} issueTypes Issue Types separated by commas, priority first (A2)
+ * @param {Array} capacitaciones Training names (A3:A20)
  * @param {number} [minimo] Optional minimum match to name a training for the 1st Issue Type, 0-1 (default 0.3)
  * @customfunction
  */
@@ -58,7 +61,7 @@ function FILTRAR_CAPACITACION(datos, issueTypes, capacitaciones, minimo) {
 
   const issues = String(issueTypes == null ? "" : issueTypes).split(",")
     .map(t => palabrasIssue(t)).filter(w => w.length);
-  if (!issues.length) return [["Write at least one Issue Type in I2."]];
+  if (!issues.length) return [["Write at least one Issue Type in A2."]];
 
   const nombres = [].concat(capacitaciones || []).flat()
     .map(String).map(s => s.trim()).filter(s => s !== "");
@@ -107,10 +110,10 @@ function FILTRAR_CAPACITACION(datos, issueTypes, capacitaciones, minimo) {
     let training, detalle;
     if (!frases.length) {
       training = "";
-      detalle = "Priority Issue Type · no training names in I3:I20";
+      detalle = "Priority Issue Type · no training names in A3:A20";
     } else if (!c) {
       training = "⚠ Not identified";
-      detalle = "0% · Priority Issue Type, kept anyway · comment does not mention any training in I3:I20";
+      detalle = "0% · Priority Issue Type, kept anyway · comment does not mention any training in A3:A20";
     } else {
       const partes = [Math.round(c.score * 100) + "%",
         "found " + c.found.join(", ") + " (" + c.found.length + " of " + c.total + " key words)"];
@@ -154,12 +157,12 @@ function palabrasClave(nombre) {
     .filter(w => (seen[w] ? false : (seen[w] = true)));
 }
 
-/** Words of an Issue Type from I2 (no stopwords). */
+/** Words of an Issue Type from A2 (no stopwords). */
 function palabrasIssue(texto) {
   return normalizar(texto).split(" ").filter(w => w && STOPWORDS.indexOf(w) === -1);
 }
 
-/** True when every word of the I2 Issue Type is in the row's Issue Type. */
+/** True when every word of the A2 Issue Type is in the row's Issue Type. */
 function contieneTodas(rowIssue, wanted) {
   return wanted.every(p => rowIssue.some(w => palabraCoincide(p, w)));
 }
