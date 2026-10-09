@@ -1,7 +1,7 @@
 /**
  * Completion Tracker – training filter
  *
- * Layout: column A holds the inputs, column B is a spacer, results in C:I.
+ * Layout: column A holds the inputs, column B is a spacer, results in C:K.
  *   A1      link to the source spreadsheet
  *   A2      Issue Types
  *   A3:A20  training names
@@ -23,7 +23,9 @@
  * later. Otherwise the row is still listed (the comment does mention it) but
  * the training is flagged instead of assigned.
  *
- * Returns WD ID | Issue Type | Comment | Date | Approved? | Training | Match %
+ * Returns, left to right (who -> when -> what -> how it was matched):
+ *   WD ID | Approved? | Date of Offense | Requested Date | Issue Type |
+ *   Comment | Training Name | Match % | Search Notes
  * priority rows first, then the others, each group sorted by the source's
  * Requested Date (column R), newest first. Set PRIORITY_FIRST = false to
  * sort everything by Requested Date only.
@@ -39,7 +41,7 @@ const SRC_DATE = 1;      // B  Date of Offense
 const SRC_WDID = 2;      // C  WDID
 const SRC_ISSUE = 4;     // E  Issue Type
 const SRC_COMMENT = 5;   // F  Supervisor Comment
-const SRC_REQUESTED = 17; // R  Requested Date (sort key)
+const SRC_REQUESTED = 17; // R  Requested Date (shown, and sort key)
 
 const DEFAULT_MIN_MATCH = 0.3;      // 1st Issue Type: share of training words to name the training
 const SECONDARY_MIN_MATCH = 0.4;    // other Issue Types: share of distinctive words found
@@ -111,16 +113,18 @@ function FILTRAR_CAPACITACION(datos, issueTypes, capacitaciones, minimo) {
 
     candidatos.sort((a, b) => (b.fechaOk - a.fechaOk) || (b.score - a.score));
     const c = candidatos[0];
-    let training, detalle;
+    let training, pct, detalle;
     if (!frases.length) {
       training = "";
+      pct = "";
       detalle = "Priority Issue Type · no training names in A3:A20";
     } else if (!c) {
       training = "⚠ Not identified";
-      detalle = "0% · Priority Issue Type, kept anyway · comment does not mention any training in A3:A20";
+      pct = 0;
+      detalle = "Priority Issue Type, kept anyway · comment does not mention any training in A3:A20";
     } else {
-      const partes = [Math.round(c.score * 100) + "%",
-        "found " + c.found.join(", ") + " (" + c.found.length + " of " + c.total + " key words)"];
+      pct = Math.round(c.score * 100) / 100;
+      const partes = ["found " + c.found.join(", ") + " (" + c.found.length + " of " + c.total + " key words)"];
       if (c.ignoradas.length) partes.push("not counted: " + c.ignoradas.join(", ") + " (part of the Issue Type)");
       partes.push(nivel === 0 ? "Priority Issue Type" : "Secondary Issue Type, strict check passed");
       if (c.fechaOk) {
@@ -137,7 +141,8 @@ function FILTRAR_CAPACITACION(datos, issueTypes, capacitaciones, minimo) {
     const status = String(row[SRC_STATUS] == null ? "" : row[SRC_STATUS]).trim() || "Pending";
     porNivel[nivel].push({
       orden: marcaDeTiempo(row[SRC_REQUESTED]),
-      fila: [wdid, row[SRC_ISSUE], comment, row[SRC_DATE], status, training, detalle]
+      fila: [wdid, status, row[SRC_DATE], row[SRC_REQUESTED], row[SRC_ISSUE],
+             comment, training, pct, detalle]
     });
   });
 
@@ -148,7 +153,7 @@ function FILTRAR_CAPACITACION(datos, issueTypes, capacitaciones, minimo) {
     g.sort((a, b) => b.orden - a.orden);
     g.forEach(x => out.push(x.fila));
   });
-  return out.length ? out : [["No matches", "", "", "", "", "", ""]];
+  return out.length ? out : [["No matches", "", "", "", "", "", "", "", ""]];
 }
 
 // ---------------------------------------------------------------------------
