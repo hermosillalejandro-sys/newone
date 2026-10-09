@@ -101,7 +101,7 @@ function FILTRAR_CAPACITACION(datos, issueTypes, capacitaciones, minimo) {
 function normalizar(v) {
   return String(v == null ? "" : v)
     .toLowerCase()
-    .normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 }
