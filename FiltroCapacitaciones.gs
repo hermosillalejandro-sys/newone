@@ -1,7 +1,7 @@
 /**
  * Completion Tracker – training filter
  *
- * Layout: column A holds the inputs, column B is a spacer, results in C:K.
+ * Layout: column A holds the inputs, column B is a spacer, results in C:L.
  *   A1      link to the source spreadsheet
  *   A2      Issue Types
  *   A3:A20  training names
@@ -23,9 +23,10 @@
  * later. Otherwise the row is still listed (the comment does mention it) but
  * the training is flagged instead of assigned.
  *
- * Returns, left to right (who -> when -> what -> how it was matched):
- *   WD ID | Approved? | Date of Offense | Requested Date | Issue Type |
+ * Returns, left to right (key -> who -> when -> what -> how it was matched):
+ *   Key | WD ID | Approved? | Date of Offense | Requested Date | Issue Type |
  *   Comment | Training Name | Match % | Search Notes
+ * Key comes first so VLOOKUP/XLOOKUP against this list works directly.
  * priority rows first, then the others, each group sorted by the source's
  * Requested Date (column R), newest first. Set PRIORITY_FIRST = false to
  * sort everything by Requested Date only.
@@ -42,6 +43,7 @@ const SRC_WDID = 2;      // C  WDID
 const SRC_ISSUE = 4;     // E  Issue Type
 const SRC_COMMENT = 5;   // F  Supervisor Comment
 const SRC_REQUESTED = 17; // R  Requested Date (shown, and sort key)
+const SRC_KEY = 19;      // T  Key (WDID + Date of Offense + MissingTime)
 
 const DEFAULT_MIN_MATCH = 0.3;      // 1st Issue Type: share of training words to name the training
 const SECONDARY_MIN_MATCH = 0.4;    // other Issue Types: share of distinctive words found
@@ -141,7 +143,7 @@ function FILTRAR_CAPACITACION(datos, issueTypes, capacitaciones, minimo) {
     const status = String(row[SRC_STATUS] == null ? "" : row[SRC_STATUS]).trim() || "Pending";
     porNivel[nivel].push({
       orden: marcaDeTiempo(row[SRC_REQUESTED]),
-      fila: [wdid, status, row[SRC_DATE], row[SRC_REQUESTED], row[SRC_ISSUE],
+      fila: [row[SRC_KEY], wdid, status, row[SRC_DATE], row[SRC_REQUESTED], row[SRC_ISSUE],
              comment, training, pct, detalle]
     });
   });
@@ -153,7 +155,7 @@ function FILTRAR_CAPACITACION(datos, issueTypes, capacitaciones, minimo) {
     g.sort((a, b) => b.orden - a.orden);
     g.forEach(x => out.push(x.fila));
   });
-  return out.length ? out : [["No matches", "", "", "", "", "", "", "", ""]];
+  return out.length ? out : [["No matches", "", "", "", "", "", "", "", "", ""]];
 }
 
 // ---------------------------------------------------------------------------
