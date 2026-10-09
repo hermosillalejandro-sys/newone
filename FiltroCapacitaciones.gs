@@ -6,31 +6,39 @@
  *
  * I2 holds one or more Issue Types separated by commas, in priority order:
  *   Onsite Activities – Training Iniciatives, Training / Huddles
- *   - 1st Issue Type (priority): lenient word check (DEFAULT_MIN_MATCH).
- *   - 2nd, 3rd... Issue Types: stricter word check; words that are already in
- *     the Issue Type name ("training", "huddles") do not count, and at least
- *     SECONDARY_MIN_WORDS distinctive words of the training must be found.
+ *   - 1st Issue Type (priority): every row is kept. The comment is only
+ *     compared to I3:I20 to tell which training it was.
+ *   - 2nd, 3rd... Issue Types: a row is kept only when its comment matches a
+ *     training in I3:I20 with a stricter check: words that are already in the
+ *     Issue Type name ("training", "huddles") do not count, and at least
+ *     SECONDARY_MIN_WORDS distinctive words must be found.
  *   An Issue Type can be written in part ("Training / Huddles" matches
  *   "Onsite Activities – Training / Huddles").
  *
- * Returns WD ID | Issue Type | Comment | Date | Match % | Training,
+ * When a training name carries a date ("... Weekly Edition - 10.5.2026"),
+ * the row's Date of Offense must fall between that date and DATE_WINDOW_DAYS
+ * later. Otherwise the row is still listed (the comment does mention it) but
+ * the training is flagged instead of assigned.
+ *
+ * Returns WD ID | Issue Type | Comment | Date | Approved? | Training | Match %
  * priority rows first, then the others, each in source order.
  *
  * Tolerant on purpose: case, accents, punctuation, dashes, word order,
  * small typos ("Trainig", "insder"), shortened words ("train") and missing
- * words all still match. Numbers/dates in the training name are ignored,
- * because supervisors rarely type them the same way.
+ * words all still match.
  */
 
 // Source columns inside Compliance!A8:T (0 = column A)
+const SRC_STATUS = 0;    // A  Status (Approved/Denied)
 const SRC_DATE = 1;      // B  Date of Offense
 const SRC_WDID = 2;      // C  WDID
 const SRC_ISSUE = 4;     // E  Issue Type
 const SRC_COMMENT = 5;   // F  Supervisor Comment
 
-const DEFAULT_MIN_MATCH = 0.3;      // 1st Issue Type: share of training words found
+const DEFAULT_MIN_MATCH = 0.3;      // 1st Issue Type: share of training words to name the training
 const SECONDARY_MIN_MATCH = 0.4;    // other Issue Types: share of distinctive words found
 const SECONDARY_MIN_WORDS = 2;      // other Issue Types: distinctive words found, at least
+const DATE_WINDOW_DAYS = 6;         // training date + 6 days = the whole week
 
 const STOPWORDS = ["the", "a", "an", "of", "for", "to", "and", "in", "on", "at", "by",
   "with", "de", "la", "el", "los", "las", "y", "en", "del", "para", "por", "con"];
@@ -41,7 +49,7 @@ const STOPWORDS = ["the", "a", "an", "of", "for", "to", "and", "in", "on", "at",
  * @param {Array} datos IMPORTRANGE(A1, "Compliance!A8:T")
  * @param {string} issueTypes Issue Types separated by commas, priority first (I2)
  * @param {Array} capacitaciones Training names (I3:I20)
- * @param {number} [minimo] Optional minimum match for the 1st Issue Type, 0-1 (default 0.3)
+ * @param {number} [minimo] Optional minimum match to name a training for the 1st Issue Type, 0-1 (default 0.3)
  * @customfunction
  */
 function FILTRAR_CAPACITACION(datos, issueTypes, capacitaciones, minimo) {
@@ -54,7 +62,7 @@ function FILTRAR_CAPACITACION(datos, issueTypes, capacitaciones, minimo) {
 
   const nombres = [].concat(capacitaciones || []).flat()
     .map(String).map(s => s.trim()).filter(s => s !== "");
-  const frases = nombres.map(n => ({ nombre: n, palabras: palabrasClave(n) }))
+  const frases = nombres.map(n => ({ nombre: n, palabras: palabrasClave(n), fecha: fechaDeNombre(n) }))
     .filter(f => f.palabras.length);
 
   const porNivel = issues.map(() => []);
@@ -69,30 +77,62 @@ function FILTRAR_CAPACITACION(datos, issueTypes, capacitaciones, minimo) {
     const comment = row[SRC_COMMENT];
     const words = normalizar(comment).split(" ").filter(w => w);
     const joined = words.join("");
+    const rowDate = fechaDeFila(row[SRC_DATE]);
 
-    let best = { score: frases.length ? 0 : 1, nombre: "" };
+    // Every training the comment matches, with its date check.
+    const candidatos = [];
     frases.forEach(f => {
-      let palabras = f.palabras, minWords = 1, min = minMatch;
+      let palabras = f.palabras, minWords = 1, min = minMatch, ignoradas = [];
       if (nivel > 0) {
         // Stricter: words already in the Issue Type name prove nothing.
-        palabras = f.palabras.filter(p => !rowIssue.some(w => palabraCoincide(p, w)));
+        ignoradas = f.palabras.filter(p => rowIssue.some(w => palabraCoincide(p, w)));
+        palabras = f.palabras.filter(p => ignoradas.indexOf(p) === -1);
         if (!palabras.length) return;
         minWords = Math.min(SECONDARY_MIN_WORDS, palabras.length);
         min = SECONDARY_MIN_MATCH;
       }
       const found = encontradas(palabras, words, joined);
-      const s = found / palabras.length;
-      if (found >= minWords && s >= min && s > best.score) best = { score: s, nombre: f.nombre };
+      const score = found.length / palabras.length;
+      if (found.length < minWords || score < min) return;
+      const rango = f.fecha ? rangoFechas(f.fecha, rowDate) : null;
+      const fechaOk = !rango || (rowDate && rowDate >= rango.inicio && rowDate <= rango.fin);
+      candidatos.push({ f, found, total: palabras.length, score, ignoradas, rango, fechaOk });
     });
 
-    if (best.score > 0) {
-      porNivel[nivel].push([wdid, row[SRC_ISSUE], comment, row[SRC_DATE],
-        Math.round(best.score * 100) / 100, best.nombre]);
+    // Secondary Issue Types need a match; the priority one is always kept.
+    if (nivel > 0 && !candidatos.length) return;
+
+    candidatos.sort((a, b) => (b.fechaOk - a.fechaOk) || (b.score - a.score));
+    const c = candidatos[0];
+    let training, detalle;
+    if (!frases.length) {
+      training = "";
+      detalle = "Priority Issue Type · no training names in I3:I20";
+    } else if (!c) {
+      training = "⚠ Not identified";
+      detalle = "0% · Priority Issue Type, kept anyway · comment does not mention any training in I3:I20";
+    } else {
+      const partes = [Math.round(c.score * 100) + "%",
+        "found " + c.found.join(", ") + " (" + c.found.length + " of " + c.total + " key words)"];
+      if (c.ignoradas.length) partes.push("not counted: " + c.ignoradas.join(", ") + " (part of the Issue Type)");
+      partes.push(nivel === 0 ? "Priority Issue Type" : "Secondary Issue Type, strict check passed");
+      if (c.fechaOk) {
+        training = c.f.nombre;
+        if (c.rango) partes.push("date within " + fmt(c.rango.inicio) + "–" + fmt(c.rango.fin));
+      } else {
+        training = "⚠ Date mismatch – check";
+        partes.push("looks like \"" + c.f.nombre + "\" but date " +
+          (rowDate ? fmt(rowDate) : "is missing") + " is outside " + fmt(c.rango.inicio) + "–" + fmt(c.rango.fin));
+      }
+      detalle = partes.join(" · ");
     }
+
+    const status = String(row[SRC_STATUS] == null ? "" : row[SRC_STATUS]).trim() || "Pending";
+    porNivel[nivel].push([wdid, row[SRC_ISSUE], comment, row[SRC_DATE], status, training, detalle]);
   });
 
   const out = [].concat.apply([], porNivel);
-  return out.length ? out : [["No matches", "", "", "", "", ""]];
+  return out.length ? out : [["No matches", "", "", "", "", "", ""]];
 }
 
 // ---------------------------------------------------------------------------
@@ -101,7 +141,7 @@ function FILTRAR_CAPACITACION(datos, issueTypes, capacitaciones, minimo) {
 function normalizar(v) {
   return String(v == null ? "" : v)
     .toLowerCase()
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 }
@@ -124,14 +164,11 @@ function contieneTodas(rowIssue, wanted) {
   return wanted.every(p => rowIssue.some(w => palabraCoincide(p, w)));
 }
 
-/** How many training words are found in the comment. */
+/** Training words found in the comment. */
 function encontradas(palabras, words, joined) {
-  let found = 0;
-  palabras.forEach(p => {
-    if (words.some(w => palabraCoincide(p, w))) found++;
-    else if (p.length >= 5 && joined.indexOf(p) !== -1) found++;   // "agentinsider"
-  });
-  return found;
+  return palabras.filter(p =>
+    words.some(w => palabraCoincide(p, w)) ||
+    (p.length >= 5 && joined.indexOf(p) !== -1));                 // "agentinsider"
 }
 
 /** Same word allowing typos and shortened forms ("train" ~ "training"). */
@@ -156,4 +193,37 @@ function distancia(a, b) {
     prev = cur;
   }
   return prev[b.length];
+}
+
+// ---------------------------------------------------------------------------
+
+/** Month/day(/year) inside a training name: 10.5.2026, 10/5, 10-05-26. */
+function fechaDeNombre(nombre) {
+  const m = String(nombre).match(/(\d{1,2})[.\/-](\d{1,2})(?:[.\/-](\d{2,4}))?/);
+  if (!m) return null;
+  const mes = +m[1], dia = +m[2];
+  if (mes < 1 || mes > 12 || dia < 1 || dia > 31) return null;
+  let anio = m[3] ? +m[3] : null;
+  if (anio !== null && anio < 100) anio += 2000;
+  return { mes, dia, anio };
+}
+
+/** Date of Offense as a date at midnight (Date object or "MM/dd/yyyy" text). */
+function fechaDeFila(v) {
+  if (v instanceof Date && !isNaN(v)) return new Date(v.getFullYear(), v.getMonth(), v.getDate());
+  const m = String(v == null ? "" : v).match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  return m ? new Date(+m[3], +m[1] - 1, +m[2]) : null;
+}
+
+/** Training date .. training date + DATE_WINDOW_DAYS (year from the row if missing). */
+function rangoFechas(f, rowDate) {
+  const anio = f.anio || (rowDate ? rowDate.getFullYear() : new Date().getFullYear());
+  const inicio = new Date(anio, f.mes - 1, f.dia);
+  const fin = new Date(anio, f.mes - 1, f.dia + DATE_WINDOW_DAYS);
+  return { inicio, fin };
+}
+
+function fmt(d) {
+  const p = n => (n < 10 ? "0" : "") + n;
+  return p(d.getMonth() + 1) + "/" + p(d.getDate()) + "/" + d.getFullYear();
 }
