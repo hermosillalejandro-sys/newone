@@ -24,7 +24,9 @@
  * the training is flagged instead of assigned.
  *
  * Returns WD ID | Issue Type | Comment | Date | Approved? | Training | Match %
- * priority rows first, then the others, each in source order.
+ * priority rows first, then the others, each group sorted by the source's
+ * Requested Date (column R), newest first. Set PRIORITY_FIRST = false to
+ * sort everything by Requested Date only.
  *
  * Tolerant on purpose: case, accents, punctuation, dashes, word order,
  * small typos ("Trainig", "insder"), shortened words ("train") and missing
@@ -37,11 +39,13 @@ const SRC_DATE = 1;      // B  Date of Offense
 const SRC_WDID = 2;      // C  WDID
 const SRC_ISSUE = 4;     // E  Issue Type
 const SRC_COMMENT = 5;   // F  Supervisor Comment
+const SRC_REQUESTED = 17; // R  Requested Date (sort key)
 
 const DEFAULT_MIN_MATCH = 0.3;      // 1st Issue Type: share of training words to name the training
 const SECONDARY_MIN_MATCH = 0.4;    // other Issue Types: share of distinctive words found
 const SECONDARY_MIN_WORDS = 2;      // other Issue Types: distinctive words found, at least
 const DATE_WINDOW_DAYS = 6;         // training date + 6 days = the whole week
+const PRIORITY_FIRST = true;        // false = one list sorted only by Requested Date
 
 const STOPWORDS = ["the", "a", "an", "of", "for", "to", "and", "in", "on", "at", "by",
   "with", "de", "la", "el", "los", "las", "y", "en", "del", "para", "por", "con"];
@@ -131,10 +135,19 @@ function FILTRAR_CAPACITACION(datos, issueTypes, capacitaciones, minimo) {
     }
 
     const status = String(row[SRC_STATUS] == null ? "" : row[SRC_STATUS]).trim() || "Pending";
-    porNivel[nivel].push([wdid, row[SRC_ISSUE], comment, row[SRC_DATE], status, training, detalle]);
+    porNivel[nivel].push({
+      orden: marcaDeTiempo(row[SRC_REQUESTED]),
+      fila: [wdid, row[SRC_ISSUE], comment, row[SRC_DATE], status, training, detalle]
+    });
   });
 
-  const out = [].concat.apply([], porNivel);
+  // Newest Requested Date first; rows without one go last.
+  const grupos = PRIORITY_FIRST ? porNivel : [[].concat.apply([], porNivel)];
+  const out = [];
+  grupos.forEach(g => {
+    g.sort((a, b) => b.orden - a.orden);
+    g.forEach(x => out.push(x.fila));
+  });
   return out.length ? out : [["No matches", "", "", "", "", "", ""]];
 }
 
@@ -216,6 +229,15 @@ function fechaDeFila(v) {
   if (v instanceof Date && !isNaN(v)) return new Date(v.getFullYear(), v.getMonth(), v.getDate());
   const m = String(v == null ? "" : v).match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
   return m ? new Date(+m[3], +m[1] - 1, +m[2]) : null;
+}
+
+/** Requested Date as milliseconds (Date object or "MM/dd/yyyy HH:mm:ss" text); missing = last. */
+function marcaDeTiempo(v) {
+  if (v instanceof Date && !isNaN(v)) return v.getTime();
+  const m = String(v == null ? "" : v)
+    .match(/(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  return m ? new Date(+m[3], +m[1] - 1, +m[2], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0)).getTime()
+           : -Infinity;
 }
 
 /** Training date .. training date + DATE_WINDOW_DAYS (year from the row if missing). */
